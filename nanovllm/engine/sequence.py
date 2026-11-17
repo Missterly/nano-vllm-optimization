@@ -23,12 +23,39 @@ class Sequence:
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = len(token_ids)
         self.num_cached_tokens = 0
-        self.num_scheduled_tokens = 0
+
+        self.num_scheduled_tokens = 0  # 本轮计划计算的 token 数
+        
         self.is_prefill = True
         self.block_table = []
         self.temperature = sampling_params.temperature
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
+
+        # 用于统计 TTFT TPOT 等指标 (2026.10.24)
+        self.arrival_time: float | None = None
+        self.first_token_time: float | None = None
+        self.finish_time: float | None = None
+
+        self.last_token_time: float | None = None
+        self.inter_token_latencies: list[float] = []
+
+
+    # 2026.10.24
+    @property 
+    def time_to_first_token(self) -> float | None:
+        if self.arrival_time is None or self.first_token_time is None:
+            return None
+        
+        return (self.first_token_time - self.arrival_time) * 1000
+    
+    @property 
+    def time_per_output_token(self) -> float | None:
+        if self.first_token_time is None or self.finish_time is None or self.num_completion_tokens == 1:
+            return None
+        
+        return (self.finish_time - self.first_token_time) / (self.num_completion_tokens - 1)  * 1000
+
 
     def __len__(self):
         return self.num_tokens
@@ -75,6 +102,7 @@ class Sequence:
 
     def __setstate__(self, state):
         self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.num_scheduled_tokens, self.block_table, last_state = state
+        self.is_prefill = isinstance(last_state, list)
         if isinstance(last_state, list):
             self.token_ids = last_state
             self.last_token = self.token_ids[-1]

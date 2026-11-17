@@ -1,0 +1,75 @@
+--- a/nanovllm/engine/model_runner.py
++++ b/nanovllm/engine/model_runner.py
+@@ -245,41 +245,39 @@
+             or seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens
+         ]
+ 
+-        try:
++        if use_varlen:
++            input_ids, positions = self.prepare_prefill(seqs)
++        else:
++            input_ids, positions = self.prepare_decode(seqs)
++        hidden_states = self.run_model(input_ids, positions, use_varlen)
++
++        # 保留与请求一一对应的位置 未完成的 Prefill chunk 返回 None
++        token_ids = [None] * len(seqs) if self.rank == 0 else None
++        if sample_indices:
+             if use_varlen:
+-                input_ids, positions = self.prepare_prefill(seqs)
++                # 每段 query 的末 token 索引只在 runner 中选择一次
++                last_indices = get_context().cu_seqlens_q[1:] - 1
++                selected_indices = torch.tensor(
++                    sample_indices, dtype=torch.long, device=hidden_states.device,
++                )
++                last_indices = last_indices.index_select(0, selected_indices).long()
++                selected_hidden = hidden_states.index_select(0, last_indices)
+             else:
+-                input_ids, positions = self.prepare_decode(seqs)
+-            hidden_states = self.run_model(input_ids, positions, use_varlen)
+-
+-            # 保留与请求一一对应的位置 未完成的 Prefill chunk 返回 None
+-            token_ids = [None] * len(seqs) if self.rank == 0 else None
+-            if sample_indices:
+-                if use_varlen:
+-                    # 每段 query 的末 token 索引只在 runner 中选择一次
+-                    last_indices = get_context().cu_seqlens_q[1:] - 1
+-                    selected_indices = torch.tensor(
+-                        sample_indices, dtype=torch.long, device=hidden_states.device,
+-                    )
+-                    last_indices = last_indices.index_select(0, selected_indices).long()
+-                    selected_hidden = hidden_states.index_select(0, last_indices)
+-                else:
+-                    selected_hidden = hidden_states
+-
+-                # 所有 TP rank 选择相同的行并参与 LM Head 的 gather
+-                logits = self.model.compute_logits(selected_hidden)
+-                if self.rank == 0:
+-                    sample_seqs = [seqs[i] for i in sample_indices]
+-                    temperatures = self.prepare_sample(sample_seqs)
+-                    sampled = self.sampler(logits, temperatures).tolist()
+-                    for i, token_id in zip(sample_indices, sampled):
+-                        token_ids[i] = token_id
+-            else:
+-                # 没有采样的轮次缺少 tolist() 同步 仍须等 KV 写入完成再提交进度
+-                torch.cuda.current_stream().synchronize()
+-            return token_ids
+-        finally:
+-            reset_context()
++                selected_hidden = hidden_states
++
++            # 所有 TP rank 选择相同的行并参与 LM Head 的 gather
++            logits = self.model.compute_logits(selected_hidden)
++            if self.rank == 0:
++                sample_seqs = [seqs[i] for i in sample_indices]
++                temperatures = self.prepare_sample(sample_seqs)
++                sampled = self.sampler(logits, temperatures).tolist()
++                for i, token_id in zip(sample_indices, sampled):
++                    token_ids[i] = token_id
++        else:
++            # 没有采样的轮次缺少 tolist() 同步 仍须等 KV 写入完成再提交进度
++            torch.cuda.current_stream().synchronize()
++        reset_context()
++        return token_ids
+ 
+     @torch.inference_mode()
+     def capture_cudagraph(self):

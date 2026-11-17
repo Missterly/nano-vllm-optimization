@@ -21,12 +21,15 @@ def main():
         )
         for prompt in prompts
     ]
+
     outputs = llm.generate(prompts, sampling_params)
 
     for prompt, output in zip(prompts, outputs):
         print("\n")
         print(f"Prompt: {prompt!r}")
         print(f"Completion: {output['text']!r}")
+        print(f"Output tokens: {len(output['token_ids'])!r}")
+        print(f"Time to the first token : {output['metrics']['time_to_first_token']!r} ms")
 
 
 if __name__ == "__main__":

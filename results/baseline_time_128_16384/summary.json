@@ -1,0 +1,104 @@
+{
+  "variant": "baseline",
+  "baseline_kind": "saved_prefill_priority_scheduler_on_hybrid_runtime",
+  "arrival_mode": "time",
+  "workload_sha256": "146b22d5d3966f1035092858242622129d07d2523b73589d839e5362a522d910",
+  "config": {
+    "seed": 1,
+    "num_requests": 32,
+    "temperature": 0.6,
+    "max_model_len": 2048,
+    "max_seqs": 128,
+    "token_budget": 16384,
+    "enforce_eager": true,
+    "tensor_parallel_size": 1,
+    "model": "/home/lwj725/huggingface/Qwen3-0.6B"
+  },
+  "system": {
+    "torch": "2.8.0+cu126",
+    "cuda": "12.6",
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU"
+  },
+  "totals": {
+    "duration_s": 3.7502537199999892,
+    "steps": 145,
+    "requests": 32,
+    "prompt_tokens": 18176,
+    "output_tokens": 2048,
+    "scheduled_prefill_tokens": 18176,
+    "scheduled_decode_tokens": 2016,
+    "mixed_steps": 0,
+    "preemptions": 0,
+    "gpu_peak_allocated_gb": 5.622104167938232
+  },
+  "metrics": {
+    "ttft_ms": {
+      "count": 32,
+      "mean": 35.60825781249122,
+      "p50": 33.372006999996984,
+      "p95": 54.04595534996872,
+      "p99": 54.51918897996279,
+      "max": 54.701574999967306
+    },
+    "tpot_ms": {
+      "count": 32,
+      "mean": 31.748009665674672,
+      "p50": 31.995316277777604,
+      "p95": 40.5737517158736,
+      "p99": 41.53677920920621,
+      "max": 41.76793549206307
+    },
+    "itl_ms": {
+      "count": 2016,
+      "mean": 31.748009665674672,
+      "p50": 23.462187000006907,
+      "p95": 69.76362399996106,
+      "p99": 86.59071100004212,
+      "max": 104.7835379999924
+    },
+    "request_latency_ms": {
+      "count": 32,
+      "mean": 2035.7328667499955,
+      "p50": 2043.9306940000108,
+      "p95": 2603.435050850004,
+      "p99": 2651.40684655999,
+      "max": 2664.011825999978
+    },
+    "step_latency_ms": {
+      "count": 145,
+      "mean": 25.85172151034346,
+      "p50": 23.466003000010005,
+      "p95": 45.86729299998076,
+      "p99": 54.13889476001032,
+      "max": 54.77068100003635
+    },
+    "arrival_lag_ms": {
+      "count": 32,
+      "mean": 11.650783374978246,
+      "p50": 11.066090999980682,
+      "p95": 26.475402499979722,
+      "p99": 27.354164139972802,
+      "max": 27.52609199995959
+    },
+    "scheduled_ttft_ms": {
+      "count": 32,
+      "mean": 47.24469265622453,
+      "p50": 45.9150149999914,
+      "p95": 73.37027929997643,
+      "p99": 75.20928920998098,
+      "max": 75.76983399997061
+    },
+    "scheduled_latency_ms": {
+      "count": 32,
+      "mean": 2047.369301593729,
+      "p50": 2048.914098499972,
+      "p95": 2615.616726849998,
+      "p99": 2654.3924701799733,
+      "max": 2664.025447999961
+    },
+    "output_throughput_tps": 546.0963851800421,
+    "total_throughput_tps": 5392.701803652916,
+    "scheduled_prefill_tps": 4846.605418472874,
+    "scheduled_decode_tps": 537.563629161604
+  }
+}

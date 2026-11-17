@@ -97,7 +97,7 @@ class ModelRunner:
         seqs = [Sequence([0] * seq_len) for _ in range(num_seqs)]
         for seq in seqs:
             seq.num_scheduled_tokens = seq_len
-        self.run(seqs, True)
+        self.run(seqs)
         torch.cuda.empty_cache()
 
     def allocate_kv_cache(self):
@@ -127,6 +127,7 @@ class ModelRunner:
         return block_tables
 
     def prepare_prefill(self, seqs: list[Sequence]):
+        """为纯 Prefill 或混合批次构造统一的 varlen 输入 保持请求顺序"""
         input_ids = []
         positions = []
         cu_seqlens_q = [0]
@@ -140,7 +141,12 @@ class ModelRunner:
             seqlen_q = seq.num_scheduled_tokens
             end = start + seqlen_q
             seqlen_k = end
-            input_ids.extend(seq[start:end])
+            if seq.is_prefill:
+                input_ids.extend(seq[start:end])
+            else:
+                # TP worker 的 Decode 请求只保留 last_token 没有完整历史
+                assert seqlen_q == 1
+                input_ids.append(seq.last_token)
             positions.extend(range(start, end))
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
@@ -166,7 +172,16 @@ class ModelRunner:
         cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        set_context(True, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, slot_mapping, None, block_tables)
+        set_context(
+            True, 
+            cu_seqlens_q, 
+            cu_seqlens_k, 
+            max_seqlen_q, 
+            max_seqlen_k, 
+            slot_mapping, 
+            None, 
+            block_tables
+        )
         return input_ids, positions
 
     def prepare_decode(self, seqs: list[Sequence]):
@@ -184,7 +199,14 @@ class ModelRunner:
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         context_lens = torch.tensor(context_lens, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
         block_tables = self.prepare_block_tables(seqs)
-        set_context(False, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables)
+
+        # 把当前 Batch 的 KV Cache 相关信息保存到运行上下文中 供后续的 Attention 层使用
+        set_context(
+            False, 
+            slot_mapping=slot_mapping,  # 当前需要计算的 Token 对应的物理 KV Cache 存储位置
+            context_lens=context_lens,  # 每个请求当前参与 Attention 的上下文长度
+            block_tables=block_tables   # 每个请求的逻辑 KV Block 到物理 KV Block 的映射
+        )
         return input_ids, positions
 
     def prepare_sample(self, seqs: list[Sequence]):
@@ -193,9 +215,10 @@ class ModelRunner:
         return temperatures
 
     @torch.inference_mode()
-    def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, is_prefill: bool):
-        if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
-            return self.model.compute_logits(self.model(input_ids, positions))
+    def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor, use_varlen: bool):
+        # 这里只返回 hidden states；由 run() 筛选需要输出的请求后计算 logits。
+        if use_varlen or self.enforce_eager or input_ids.size(0) > 512:
+            return self.model(input_ids, positions)
         else:
             bs = input_ids.size(0)
             context = get_context()
@@ -209,13 +232,53 @@ class ModelRunner:
             graph_vars["context_lens"][:bs] = context.context_lens
             graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
             graph.replay()
-            return self.model.compute_logits(graph_vars["outputs"][:bs])
+            return graph_vars["outputs"][:bs]
 
-    def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
-        input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
-        temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
-        logits = self.run_model(input_ids, positions, is_prefill)
-        token_ids = self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
+
+    @torch.inference_mode()
+    def run(self, seqs: list[Sequence]) -> list[int | None] | None:
+        # 含 Prefill 时整个 batch 统一走 varlen 纯 Decode 保留 CUDA Graph
+        use_varlen = any(seq.is_prefill for seq in seqs)
+
+        if use_varlen:
+            input_ids, positions = self.prepare_prefill(seqs)
+        else:
+            input_ids, positions = self.prepare_decode(seqs)
+
+        # 执行模型前向: 返回全部 Query Token 的 Hidden States
+        hidden_states = self.run_model(input_ids, positions, use_varlen)  # hidden_states: [total_q_tokens, hidden_size]
+
+        # 确定本轮需要采样的请求
+        sample_indices = [
+            i for i, seq in enumerate(seqs)
+            if not seq.is_prefill
+            or seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens
+        ]
+
+        # 保留与请求一一对应的位置 未完成的 Prefill chunk 返回 None
+        token_ids = [None] * len(seqs) if self.rank == 0 else None
+        if sample_indices:
+            if use_varlen:
+                last_indices = get_context().cu_seqlens_q[1:] - 1  # 每个 seq 末 token 的全局行号 [num_seqs,]
+                selected_indices = torch.tensor(
+                    sample_indices, dtype=torch.long, device=hidden_states.device,
+                )  # [num_sample_seqs,]
+                last_indices = last_indices.index_select(0, selected_indices).long()  # [num_sample_seqs,]
+                selected_hidden = hidden_states.index_select(0, last_indices)  # [num_sample_seqs, hidden_size]
+            else:
+                selected_hidden = hidden_states
+
+            # 所有 TP rank 选择相同的行并参与 LM Head 的 gather
+            logits = self.model.compute_logits(selected_hidden)  # logits: [num_sample_seqs, vocab_size]
+            if self.rank == 0:
+                sample_seqs = [seqs[i] for i in sample_indices]
+                temperatures = self.prepare_sample(sample_seqs)
+                sampled = self.sampler(logits, temperatures).tolist()
+                for i, token_id in zip(sample_indices, sampled):
+                    token_ids[i] = token_id
+        else:
+            # 没有采样的轮次缺少 tolist() 同步 仍须等 KV 写入完成再提交进度
+            torch.cuda.current_stream().synchronize()
         reset_context()
         return token_ids
 

@@ -57,17 +57,28 @@ class BlockManager:
 
     def can_allocate(self, seq: Sequence) -> int:
         h = -1
-        num_cached_blocks = 0
-        num_new_blocks = seq.num_blocks
+        num_cached_blocks = 0           # 当前请求能够复用的前缀 Block 数量
+        num_new_blocks = seq.num_blocks # 需要从空闲 Block 池中占用的 Block 数量
+
         for i in range(seq.num_blocks - 1):
             token_ids = seq.block(i)
+
+            # 结合前一个 Block 的累计哈希 计算当前 Block 的前缀哈希
             h = self.compute_hash(token_ids, h)
+
+            # 根据哈希值查找对应的物理 Block ID
             block_id = self.hash_to_block_id.get(h, -1)
+
+            # 如果未找到缓存，或缓存中的 Token 不匹配 则停止前缀复用
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
                 break
+
+            # 当前 Block 命中前缀缓存
             num_cached_blocks += 1
             if block_id in self.used_block_ids:
                 num_new_blocks -= 1
+        
+        # 检查空闲 Block 数量是否满足请求的分配需求
         if len(self.free_block_ids) < num_new_blocks:
             return -1
         return num_cached_blocks
