@@ -1,27 +1,36 @@
-<!-- <p align="center">
-<img width="300" src="assets/logo.png">
-</p>
+# nano-vLLM Optimization
 
-<p align="center">
-<a href="https://trendshift.io/repositories/15323" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15323" alt="GeeeekExplorer%2Fnano-vllm | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</p> -->
+A lightweight LLM inference engine based on [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm), with mixed-batch scheduling and tools for measuring throughput and request latency.
 
-# Nano-vLLM Optimization
+## Features
 
-Lightweight LLM inference engine optimization based on [nano-vLLM](https://github.com/GeeeekExplorer/nano-vllm).
+- Decode-first scheduling with chunked prefill in the same batch.
+- Paged KV cache with prefix reuse, unified attention for mixed batches, and CUDA Graph replay for decode-only batches.
+- Offline and online benchmarks with per-request latency metrics and reproducible workload comparisons.
 
-## Key Features
+## Quick Start
 
-### Performance Benchmarking
-* Request-level performance monitoring.
-### Mixed-batch Scheduling
-* Decode-priority scheduling strategy.
+Use Python 3.10–3.12 in a CUDA-enabled environment. The example and benchmarks default to a local Qwen3-0.6B checkpoint at `~/huggingface/Qwen3-0.6B`; benchmarks accept `--model` to override it.
 
+```bash
+pip install -e .
+python example.py
+```
 
-## Environment
+Tested on Ubuntu 24.04 (WSL2) with an NVIDIA RTX 4060 Laptop GPU (8 GB).
 
-- Operation Systen: Ubuntu 24.04 (WSL2)
-- Hardware: RTX 4060 Laptop (8GB)
-- Model: Qwen3-0.6B
+## Benchmark
 
+**Fixed lengths** — 1,024 input tokens and 128 output tokens per request:
 
+```bash
+python bench_offline.py --workload fixed --num-requests 16 --input-len 1024 --output-len 128
+```
+
+**Random lengths** — sample input and output lengths per request:
+
+```bash
+python bench_offline.py --workload random --num-requests 16 --min-input-len 128 --max-input-len 1024 --min-output-len 32 --max-output-len 128
+```
+
+Reports are saved under `benchmarks/results/`. For timed arrivals or upstream comparisons, see [`bench_online.py`](bench_online.py), [`compare_offline.py`](compare_offline.py), and [`compare_online.py`](compare_online.py); each supports `--help`.
