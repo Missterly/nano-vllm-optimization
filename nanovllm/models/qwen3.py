@@ -5,6 +5,7 @@ from transformers import Qwen3Config
 
 from nanovllm.layers.activation import SiluAndMul
 from nanovllm.layers.attention import Attention
+from nanovllm.layers.fused_qk_norm_rope import fused_qk_norm_rope
 from nanovllm.layers.layernorm import RMSNorm
 from nanovllm.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
 from nanovllm.layers.rotary_embedding import get_rope
@@ -24,6 +25,7 @@ class Qwen3Attention(nn.Module):
         qkv_bias: bool = False,
         rope_theta: float = 10000,
         rope_scaling: dict | None = None,
+        use_fused_qk_norm_rope: bool = False,
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
@@ -38,6 +40,7 @@ class Qwen3Attention(nn.Module):
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
+        self.use_fused_qk_norm_rope = use_fused_qk_norm_rope and not qkv_bias and self.head_dim == 128
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -79,10 +82,21 @@ class Qwen3Attention(nn.Module):
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
-        if not self.qkv_bias:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
-        q, k = self.rotary_emb(positions, q, k)
+        cache = self.rotary_emb.cos_sin_cache
+        if (
+            self.use_fused_qk_norm_rope
+            and q.is_cuda and q.dtype == torch.bfloat16
+            and self.q_norm.weight.dtype == self.k_norm.weight.dtype == torch.bfloat16
+            and cache.dtype == torch.float32
+        ):
+            q, k = fused_qk_norm_rope(
+                q, k, positions, self.q_norm.weight, self.k_norm.weight, cache, self.q_norm.eps,
+            )
+        else:
+            if not self.qkv_bias:
+                q = self.q_norm(q)
+                k = self.k_norm(k)
+            q, k = self.rotary_emb(positions, q, k)
         o = self.attn(q, k, v)
         output = self.o_proj(o.flatten(1, -1))
         return output
@@ -122,6 +136,8 @@ class Qwen3DecoderLayer(nn.Module):
     def __init__(
         self,
         config: Qwen3Config,
+        *,
+        use_fused_qk_norm_rope: bool = False,
     ) -> None:
         super().__init__()
         self.self_attn = Qwen3Attention(
@@ -134,6 +150,7 @@ class Qwen3DecoderLayer(nn.Module):
             head_dim=getattr(config, 'head_dim', None),
             rope_theta=getattr(config, "rope_theta", 1000000),
             rope_scaling=getattr(config, "rope_scaling", None),
+            use_fused_qk_norm_rope=use_fused_qk_norm_rope,
         )
         self.mlp = Qwen3MLP(
             hidden_size=config.hidden_size,
@@ -164,10 +181,15 @@ class Qwen3Model(nn.Module):
     def __init__(
         self,
         config: Qwen3Config,
+        *,
+        use_fused_qk_norm_rope: bool = False,
     ) -> None:
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([
+            Qwen3DecoderLayer(config, use_fused_qk_norm_rope=use_fused_qk_norm_rope)
+            for _ in range(config.num_hidden_layers)
+        ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
@@ -194,10 +216,12 @@ class Qwen3ForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config: Qwen3Config
+        config: Qwen3Config,
+        *,
+        use_fused_qk_norm_rope: bool = False,
     ) -> None:
         super().__init__()
-        self.model = Qwen3Model(config)
+        self.model = Qwen3Model(config, use_fused_qk_norm_rope=use_fused_qk_norm_rope)
         self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data

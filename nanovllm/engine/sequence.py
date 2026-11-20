@@ -56,6 +56,13 @@ class Sequence:
         
         return (self.finish_time - self.first_token_time) / (self.num_completion_tokens - 1)  * 1000
 
+    @property
+    def metrics(self) -> dict:
+        return {
+            "time_to_first_token": self.time_to_first_token,
+            "time_per_output_token": self.time_per_output_token,
+            "inter_token_latencies": self.inter_token_latencies.copy()
+        }
 
     def __len__(self):
         return self.num_tokens

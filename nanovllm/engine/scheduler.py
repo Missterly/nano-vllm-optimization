@@ -100,8 +100,8 @@ class Scheduler:
             else:
                 num_tokens = seq.num_tokens - seq.num_cached_tokens
 
-            if remaining < num_tokens and num_prefill_seqs > 0:
-                break   # Keep the original one-chunked-Prefill-per-step rule.
+            # if remaining < num_tokens and num_prefill_seqs > 0:
+            #     break   # Keep the original one-chunked-Prefill-per-step rule.
 
             if not seq.block_table:
                 self.block_manager.allocate(seq, num_cached_blocks)

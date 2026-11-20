@@ -8,11 +8,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
 
-    sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
-    prompts = [
-        "introduce yourself",
-        "list all prime numbers within 100",
-    ]
+    sampling_params = SamplingParams(temperature=0.6, max_tokens=1024)
+    prompts = ["Introduce the AI Infra."]
     prompts = [
         tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
@@ -29,7 +26,7 @@ def main():
         print(f"Prompt: {prompt!r}")
         print(f"Completion: {output['text']!r}")
         print(f"Output tokens: {len(output['token_ids'])!r}")
-        print(f"Time to the first token : {output['metrics']['time_to_first_token']!r} ms")
+        # print(f"Time to the first token : {output['metrics']['time_to_first_token']!r} ms")
 
 
 if __name__ == "__main__":

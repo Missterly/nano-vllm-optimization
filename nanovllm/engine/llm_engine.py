@@ -65,15 +65,7 @@ class LLMEngine:
         self.scheduler.postprocess(seqs, token_ids, token_ready_time) # 记录 first token 完成时刻 (2026.10.24)
 
         outputs = [
-            (
-                seq.seq_id, 
-                seq.completion_token_ids, 
-                {
-                    "time_to_first_token": seq.time_to_first_token,
-                    "time_per_output_token": seq.time_per_output_token,
-                    "inter_token_latencies": seq.inter_token_latencies
-                }
-            ) 
+            (seq.seq_id, seq.completion_token_ids, seq.metrics)
             for seq in seqs if seq.is_finished
         ]
         return outputs, num_prefill_tokens, num_decode_tokens
